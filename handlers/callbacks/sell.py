@@ -275,6 +275,29 @@ async def try_handle(update: Update, context: ContextTypes.DEFAULT_TYPE, data: s
                 await notify_admin(context, f"💰 New sale! {code(code_str)} — {config.CURRENCY}{price:.0f} ({status_label}) — by {esc(seller['name'])}")
                 if price >= config.HIGH_VALUE_THRESHOLD:
                     await notify_admin(context, f"🔥 High-value sale! {code(code_str)} — {config.CURRENCY}{price:.0f} — by {esc(seller['name'])}")
+                try:
+                    pay_cmd = f"/pay {code_str}"
+                    chat = update.effective_chat
+                    if chat is not None:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=chat.id,
+                                text=f"use this command to generate payment link from tg-payment-pro\n\n{code(pay_cmd)}",
+                                parse_mode="HTML",
+                            )
+                        except BadRequest:
+                            await context.bot.send_message(
+                                chat_id=chat.id,
+                                text=f"use this command to generate payment link from tg-payment-pro\n\n{pay_cmd}",
+                            )
+                except Exception as e:
+                    logger.error("Failed to send pay command hint: %s", e)
+                    try:
+                        await query.message.reply_text(
+                            f"use this command to generate payment link from tg-payment-pro\n\n{pay_cmd}"
+                        )
+                    except Exception:
+                        pass
             else:
                 await query.edit_message_text(f"❌ {msg}")
         else:
@@ -296,8 +319,12 @@ async def try_handle(update: Update, context: ContextTypes.DEFAULT_TYPE, data: s
                     logger.error("Failed to send receipt: %s", e)
                     try:
                         await context.bot.send_message(chat_id=chat_id, text=receipt)
-                    except Exception:
-                        pass
+                    except Exception as e2:
+                        logger.error("Failed to send receipt plain: %s", e2)
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"Sale {sale_code} created but receipt failed to send.",
+                        )
 
             try:
                 await query.edit_message_text(
@@ -306,6 +333,30 @@ async def try_handle(update: Update, context: ContextTypes.DEFAULT_TYPE, data: s
             except BadRequest:
                 pass
             await notify_admin(context, f"💰 Bulk sell: {result['added']} accounts — {config.CURRENCY}{price:.0f} each ({status_label}) — by {esc(seller['name'])}")
+            sale_codes = result.get("sale_codes", [])
+            if sale_codes:
+                pay_cmd = "/pay " + ", ".join(sale_codes)
+                try:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"use this command to generate payment link from tg-payment-pro\n\n{code(pay_cmd)}",
+                            parse_mode="HTML",
+                        )
+                    except BadRequest:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"use this command to generate payment link from tg-payment-pro\n\n{pay_cmd}",
+                        )
+                except Exception as e:
+                    logger.error("Failed to send bulk pay command hint: %s", e)
+                    try:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"use this command to generate payment link from tg-payment-pro\n\n{pay_cmd}",
+                        )
+                    except Exception:
+                        pass
         return True
 
     if data == "sellcancel":
