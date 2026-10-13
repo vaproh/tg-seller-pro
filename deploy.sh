@@ -92,9 +92,17 @@ status() {
 
 install_service() {
     local service_file="/etc/systemd/system/${SERVICE_NAME}"
-    local current_user current_group
-    current_user="$(id -un)"
-    current_group="$(id -gn)"
+
+    # Run as the user who owns the repo (has uv + the GitHub SSH key), not root.
+    local run_user run_group run_home
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        run_user="${SUDO_USER}"
+    else
+        run_user="$(stat -c '%U' "${ROOT_DIR}")"
+    fi
+    run_group="$(id -gn "${run_user}" 2>/dev/null || echo "${run_user}")"
+    run_home="$(getent passwd "${run_user}" | cut -d: -f6)"
+    [ -n "${run_home}" ] || run_home="${HOME}"
 
     local unit
     unit=$(cat <<EOF
@@ -105,8 +113,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=${current_user}
-Group=${current_group}
+User=${run_user}
+Group=${run_group}
+Environment=HOME=${run_home}
 WorkingDirectory=${ROOT_DIR}
 ExecStart=/bin/bash ${ROOT_DIR}/deploy.sh --watch
 Restart=always
@@ -121,12 +130,15 @@ EOF
         printf '%s\n' "${unit}" > "${service_file}"
         systemctl daemon-reload
         systemctl enable --now "${SERVICE_NAME}"
-        log "Service '${SERVICE_NAME}' installed and started."
+        # let git trust the repo even if it is owned by a different user
+        runuser -u "${run_user}" -- git config --global --add safe.directory "${ROOT_DIR}" 2>/dev/null || true
+        log "Service '${SERVICE_NAME}' installed and started as ${run_user}."
     elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
         printf '%s\n' "${unit}" | sudo tee "${service_file}" >/dev/null
         sudo systemctl daemon-reload
         sudo systemctl enable --now "${SERVICE_NAME}"
-        log "Service '${SERVICE_NAME}' installed and started."
+        sudo -u "${run_user}" git config --global --add safe.directory "${ROOT_DIR}" 2>/dev/null || true
+        log "Service '${SERVICE_NAME}' installed and started as ${run_user}."
     else
         echo "Need root to install the systemd service. Run:"
         echo "  sudo ./deploy.sh --install-service"
