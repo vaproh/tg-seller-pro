@@ -8,6 +8,31 @@ default:
 run:
     uv run main.py
 
+# Deploy: pull latest, sync deps, restart bot in tmux
+deploy:
+    ./deploy.sh
+
+# Auto-deploy: poll GitHub every 60s and redeploy on new pushes
+watch:
+    ./deploy.sh --watch
+
+# Restart the bot without pulling
+restart:
+    ./scripts/stop_bot.sh
+    ./scripts/start_bot.sh
+
+# Stop the bot
+stop:
+    ./scripts/stop_bot.sh
+
+# Show git revision, bot and service status
+status:
+    ./deploy.sh --status
+
+# Install the systemd watcher so auto-deploy survives reboots
+install-service:
+    ./deploy.sh --install-service
+
 # Run tests
 test:
     uv run pytest tests/ -v

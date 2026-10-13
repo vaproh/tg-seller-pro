@@ -7,6 +7,7 @@ Telegram bot for selling Reddit accounts. python-telegram-bot v21+, SQLite (`dat
 - `just run` / `uv run main.py` — polling bot
 - `just test` / `uv run pytest tests/ -v` — tests (note: `tests/test_database.py` has a pre-existing collection error, unrelated `update_account_optional_fields` import)
 - `uv run python -m py_compile <file>` — syntax check
+- `./deploy.sh` — pull latest + restart bot in tmux session `tgseller`; `--watch` polls GitHub (60s) and auto-redeploys, `--install-service` installs the systemd watcher, `--status`, `--stop`
 
 ## Conventions
 - `uv` for env/deps. States via `core/state.py` (5-min TTL). Copyable values use `core/format.py:code()`.

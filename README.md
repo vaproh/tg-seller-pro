@@ -30,6 +30,27 @@ Then edit `.env` with your `BOT_TOKEN` and `ADMIN_USER_ID`.
 uv run main.py
 ```
 
+## 🚀 Deployment (VPS)
+
+The bot runs inside a detached tmux session named `tgseller`.
+
+```bash
+./deploy.sh                 # pull latest, sync deps, restart the bot
+./deploy.sh --watch         # poll GitHub every 60s; pull + restart on new pushes
+./deploy.sh --status        # git revision, bot state, watcher service state
+./deploy.sh --stop          # stop the bot
+```
+
+For unattended auto-deploy that survives reboots, install the systemd watcher:
+
+```bash
+sudo ./deploy.sh --install-service
+```
+
+Logs: `logs/deploy.log` (watcher) and `logs/bot.log` (bot output).
+
+Env overrides: `BRANCH` (default `main`), `INTERVAL` (default `60`), `SESSION_NAME` (default `tgseller`).
+
 ## 📝 Commands
 
 ### 📦 Account Management
@@ -130,6 +151,8 @@ uv run pytest tests/ -v
 ├── main.py                 # 🚀 Entry point
 ├── config.py               # ⚙️ Environment config
 ├── install.sh              # 📥 Install script
+├── deploy.sh               # 🚀 Deploy / auto-deploy watcher
+├── scripts/                # 🔁 start_bot.sh / stop_bot.sh
 ├── pyproject.toml          # 📦 Dependencies (uv)
 ├── justfile                # 🔧 Task runner
 ├── .env.example            # 📝 Env template
