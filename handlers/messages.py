@@ -1,6 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from core.permissions import require_seller, require_admin
+from core.permissions import require_seller, require_admin, get_user_role
 from core.state import state
 from core.format import esc, code, code_id, _d, _truncate
 from core.keyboards import category_keyboard, confirm_keyboard
@@ -17,10 +17,22 @@ from database import (
 from database.sales import update_sale, get_sale_by_id, create_draft_sale
 from database import get_seller_by_user_id
 from utils.parsers import parse_bulk_lines, parse_csv_file
-from utils.notifications import notify_admin, fmt_bulk_import
+from utils.notifications import notify_admin, fmt_bulk_import, notify_seller_dues_edit
 import config
 
 MAX_CSV_SIZE = 5 * 1024 * 1024
+
+
+def _dues_target_note(user_id, key):
+    """For admins mid-flow: ' for <b>Name</b>', so they know whose ledger they're editing."""
+    if get_user_role(user_id) != "admin":
+        return ""
+    seller_id = state.get(user_id, key)
+    if not seller_id:
+        return ""
+    from database.sellers import get_seller_by_id
+    target = get_seller_by_id(seller_id)
+    return f" for <b>{esc(target['name'])}</b>" if target else ""
 
 
 async def _editsale_process_ids_text(update, context, text):
@@ -455,25 +467,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.set(user_id, "duesadd_amount", amount)
         state.set(user_id, "duesadd_step", "reason")
         await update.message.reply_text(
-            f"💰 Adding {config.CURRENCY}{amount:.0f} to dues.\n\n📝 Enter a reason:"
+            f"💰 Adding {config.CURRENCY}{amount:.0f}{_dues_target_note(user_id, 'duesadd_seller_id')} to dues.\n\n📝 Enter a reason:",
+            parse_mode="HTML",
         )
         return
 
     if duesadd_step == "reason":
-        from database.sellers import get_seller_by_user_id
-        from database.dues import add_due
+        from database.sellers import get_seller_by_user_id, get_seller_by_id
+        from database.dues import add_due, get_dues_balance
         amount = state.get(user_id, "duesadd_amount")
+        seller_id = state.get(user_id, "duesadd_seller_id")
+        who = _dues_target_note(user_id, "duesadd_seller_id")
         state.pop(user_id, "duesadd_step", None)
         state.pop(user_id, "duesadd_amount", None)
+        state.pop(user_id, "duesadd_seller_id", None)
         reason = text if text.lower() != "/skip" else None
-        seller = get_seller_by_user_id(user_id)
-        if seller and amount:
-            add_due(seller["id"], amount, reason)
+        if seller_id is None:
+            _s = get_seller_by_user_id(user_id)
+            seller_id = _s["id"] if _s else None
+        if seller_id and amount:
+            add_due(seller_id, amount, reason)
             await update.message.reply_text(
-                f"✅ <b>Due Added</b>\n\n💰 Amount: {config.CURRENCY}{amount:.0f}\n"
+                f"✅ <b>Due Added</b>{who}\n\n💰 Amount: {config.CURRENCY}{amount:.0f}\n"
                 f"📝 Reason: {esc(reason) if reason else '—'}",
                 parse_mode="HTML",
             )
+            if who:
+                target = get_seller_by_id(seller_id)
+                if target:
+                    await notify_seller_dues_edit(
+                        update, context, target, "add", amount, reason,
+                        get_dues_balance(seller_id),
+                    )
         return
 
     # ── Dues remove flow ───────────────────────────────────
@@ -489,37 +514,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         from database.sellers import get_seller_by_user_id as _get_seller
         from database.dues import get_dues_balance as _get_balance
-        _seller = _get_seller(user_id)
-        if _seller:
-            _balance = _get_balance(_seller["id"])
+        _seller_id = state.get(user_id, "duesremove_seller_id")
+        if _seller_id is None:
+            _seller = _get_seller(user_id)
+            _seller_id = _seller["id"] if _seller else None
+        if _seller_id:
+            _balance = _get_balance(_seller_id)
             if amount > _balance:
                 await update.message.reply_text(
                     f"⚠️ Cannot remove {config.CURRENCY}{amount:.0f}. "
-                    f"Your balance is {config.CURRENCY}{_balance:.0f}."
+                    f"Balance is {config.CURRENCY}{_balance:.0f}."
                 )
                 return
         state.set(user_id, "duesremove_amount", amount)
         state.set(user_id, "duesremove_step", "reason")
         await update.message.reply_text(
-            f"📉 Removing {config.CURRENCY}{amount:.0f} from dues.\n\n📝 Enter a reason:"
+            f"📉 Removing {config.CURRENCY}{amount:.0f}{_dues_target_note(user_id, 'duesremove_seller_id')} from dues.\n\n📝 Enter a reason:",
+            parse_mode="HTML",
         )
         return
 
     if duesremove_step == "reason":
-        from database.sellers import get_seller_by_user_id
-        from database.dues import remove_due
+        from database.sellers import get_seller_by_id
+        from database.dues import remove_due, get_dues_balance
         amount = state.get(user_id, "duesremove_amount")
+        seller_id = state.get(user_id, "duesremove_seller_id")
+        who = _dues_target_note(user_id, "duesremove_seller_id")
         state.pop(user_id, "duesremove_step", None)
         state.pop(user_id, "duesremove_amount", None)
+        state.pop(user_id, "duesremove_seller_id", None)
         reason = text if text.lower() != "/skip" else None
-        seller = get_seller_by_user_id(user_id)
-        if seller and amount:
-            remove_due(seller["id"], amount, reason)
+        if seller_id and amount:
+            remove_due(seller_id, amount, reason)
             await update.message.reply_text(
-                f"✅ <b>Due Removed</b>\n\n💰 Amount: {config.CURRENCY}{amount:.0f}\n"
+                f"✅ <b>Due Removed</b>{who}\n\n💰 Amount: {config.CURRENCY}{amount:.0f}\n"
                 f"📝 Reason: {esc(reason) if reason else '—'}",
                 parse_mode="HTML",
             )
+            if who:
+                target = get_seller_by_id(seller_id)
+                if target:
+                    await notify_seller_dues_edit(
+                        update, context, target, "remove", amount, reason,
+                        get_dues_balance(seller_id),
+                    )
         return
 
 

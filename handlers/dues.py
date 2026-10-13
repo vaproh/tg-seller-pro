@@ -8,9 +8,31 @@ from database.dues import (
     add_due, remove_due, get_dues_balance,
     get_all_dues_balances, get_dues_history, count_dues,
 )
+from utils.notifications import notify_seller_dues_edit
 import config
 
 DUES_PER_PAGE = 5
+
+
+def _find_seller(name):
+    target_name = name.lstrip("@").lower()
+    fallback = None
+    for s in list_sellers():
+        sd = dict(s) if not isinstance(s, dict) else s
+        if sd["name"].lower() != target_name:
+            continue
+        if sd.get("active"):
+            return sd
+        fallback = fallback or sd
+    return fallback
+
+
+def _is_amount(token):
+    try:
+        float(token.replace(config.CURRENCY, "").replace(",", ""))
+        return True
+    except ValueError:
+        return False
 
 
 def _fmt_due_entry(entry):
@@ -74,16 +96,9 @@ async def dues_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(_truncate(text), parse_mode="HTML")
         return
     if args and role == "admin":
-        target_name = args[0].lstrip("@")
-        sellers = list_sellers()
-        target = None
-        for s in sellers:
-            sd = dict(s) if not isinstance(s, dict) else s
-            if sd["name"].lower() == target_name.lower():
-                target = sd
-                break
+        target = _find_seller(args[0])
         if not target:
-            await update.message.reply_text(f"⚠️ Seller <code>{esc(target_name)}</code> not found.", parse_mode="HTML")
+            await update.message.reply_text(f"⚠️ Seller <code>{esc(args[0])}</code> not found.", parse_mode="HTML")
             return
         balance = get_dues_balance(target["id"])
         total = count_dues(seller_id=target["id"])
@@ -129,92 +144,143 @@ async def duesadd_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
     user_id = update.effective_user.id
-    seller = get_seller_by_user_id(user_id)
-    if not seller:
-        await update.message.reply_text("⚠️ You are not registered as a seller.")
-        return
-    args = context.args
-    if args:
-        try:
-            amount = float(args[0])
-            if amount <= 0:
-                await update.message.reply_text("⚠️ Amount must be positive.")
-                return
-        except ValueError:
-            await update.message.reply_text("⚠️ Invalid amount. Usage: /duesadd 500")
+    is_admin = get_user_role(user_id) == "admin"
+    args = list(context.args or [])
+    if is_admin:
+        if not args or _is_amount(args[0]):
+            await update.message.reply_text("⚠️ Usage: /duesadd @seller <amount> [reason]")
             return
-        reason = " ".join(args[1:]) if len(args) > 1 else None
-        if not reason:
-            state.set(user_id, "duesadd_amount", amount)
-            state.set(user_id, "duesadd_step", "reason")
-            await update.message.reply_text(
-                f"💰 Adding {config.CURRENCY}{amount:.0f} to dues.\n\n"
-                f"📝 Please enter a reason for this due:"
-            )
+        target = _find_seller(args[0])
+        if not target:
+            await update.message.reply_text(f"⚠️ Seller <code>{esc(args[0])}</code> not found.", parse_mode="HTML")
             return
-        add_due(seller["id"], amount, reason)
+        args = args[1:]
+        who = f" for <b>{esc(target['name'])}</b>"
+    else:
+        target = get_seller_by_user_id(user_id)
+        if not target:
+            await update.message.reply_text("⚠️ You are not registered as a seller.")
+            return
+        who = ""
+    target_id = target["id"]
+
+    if not args:
+        state.set(user_id, "duesadd_seller_id", target_id)
+        state.set(user_id, "duesadd_step", "amount")
         await update.message.reply_text(
-            f"✅ <b>Due Added</b>\n\n"
-            f"💰 Amount: {config.CURRENCY}{amount:.0f}\n"
-            f"📝 Reason: {esc(reason)}",
+            f"💰 <b>Add Due</b>{who}\n\nHow much do you want to add?",
             parse_mode="HTML",
         )
         return
-    state.set(user_id, "duesadd_step", "amount")
+
+    try:
+        amount = float(args[0])
+        if amount <= 0:
+            await update.message.reply_text("⚠️ Amount must be positive.")
+            return
+    except ValueError:
+        usage = "/duesadd @seller 500 reason" if is_admin else "/duesadd 500"
+        await update.message.reply_text(f"⚠️ Invalid amount. Usage: {usage}")
+        return
+
+    reason = " ".join(args[1:]) if len(args) > 1 else None
+    if not reason:
+        state.set(user_id, "duesadd_seller_id", target_id)
+        state.set(user_id, "duesadd_amount", amount)
+        state.set(user_id, "duesadd_step", "reason")
+        await update.message.reply_text(
+            f"💰 Adding {config.CURRENCY}{amount:.0f}{who} to dues.\n\n"
+            f"📝 Please enter a reason for this due:",
+            parse_mode="HTML",
+        )
+        return
+    add_due(target_id, amount, reason)
     await update.message.reply_text(
-        "💰 <b>Add Due</b>\n\nHow much do you want to add?",
+        f"✅ <b>Due Added</b>{who}\n\n"
+        f"💰 Amount: {config.CURRENCY}{amount:.0f}\n"
+        f"📝 Reason: {esc(reason)}",
         parse_mode="HTML",
     )
+    if is_admin:
+        await notify_seller_dues_edit(
+            update, context, target, "add", amount, reason, get_dues_balance(target_id)
+        )
 
 
 async def duesremove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await require_seller(update):
         return
     user_id = update.effective_user.id
-    seller = get_seller_by_user_id(user_id)
-    if not seller:
-        await update.message.reply_text("⚠️ You are not registered as a seller.")
-        return
-    args = context.args
-    if args:
-        try:
-            amount = float(args[0])
-            if amount <= 0:
-                await update.message.reply_text("⚠️ Amount must be positive.")
-                return
-        except ValueError:
-            await update.message.reply_text("⚠️ Invalid amount. Usage: /duesremove 500")
+    is_admin = get_user_role(user_id) == "admin"
+    args = list(context.args or [])
+    if is_admin:
+        if not args or _is_amount(args[0]):
+            await update.message.reply_text("⚠️ Usage: /duesremove @seller <amount> [reason]")
             return
-        balance = get_dues_balance(seller["id"])
-        if amount > balance:
-            await update.message.reply_text(
-                f"⚠️ Cannot remove {config.CURRENCY}{amount:.0f}. "
-                f"Your balance is {config.CURRENCY}{balance:.0f}."
-            )
+        target = _find_seller(args[0])
+        if not target:
+            await update.message.reply_text(f"⚠️ Seller <code>{esc(args[0])}</code> not found.", parse_mode="HTML")
             return
-        reason = " ".join(args[1:]) if len(args) > 1 else None
-        if not reason:
-            state.set(user_id, "duesremove_amount", amount)
-            state.set(user_id, "duesremove_step", "reason")
-            await update.message.reply_text(
-                f"📉 Removing {config.CURRENCY}{amount:.0f} from dues.\n\n"
-                f"📝 Please enter a reason for this removal:"
-            )
+        args = args[1:]
+        who = f" for <b>{esc(target['name'])}</b>"
+    else:
+        target = get_seller_by_user_id(user_id)
+        if not target:
+            await update.message.reply_text("⚠️ You are not registered as a seller.")
             return
-        remove_due(seller["id"], amount, reason)
+        who = ""
+    target_id = target["id"]
+    balance = get_dues_balance(target_id)
+
+    if not args:
+        if balance <= 0:
+            await update.message.reply_text(f"📭 No dues to remove{who}.", parse_mode="HTML")
+            return
+        state.set(user_id, "duesremove_seller_id", target_id)
+        state.set(user_id, "duesremove_step", "amount")
         await update.message.reply_text(
-            f"✅ <b>Due Removed</b>\n\n"
-            f"💰 Amount: {config.CURRENCY}{amount:.0f}\n"
-            f"📝 Reason: {esc(reason)}",
+            f"📉 <b>Remove Due</b>{who} (Balance: {config.CURRENCY}{balance:.0f})\n\n"
+            f"How much do you want to remove?",
             parse_mode="HTML",
         )
         return
-    balance = get_dues_balance(seller["id"])
-    if balance <= 0:
-        await update.message.reply_text("📭 No dues to remove.")
+
+    try:
+        amount = float(args[0])
+        if amount <= 0:
+            await update.message.reply_text("⚠️ Amount must be positive.")
+            return
+    except ValueError:
+        usage = "/duesremove @seller 500 reason" if is_admin else "/duesremove 500"
+        await update.message.reply_text(f"⚠️ Invalid amount. Usage: {usage}")
         return
-    state.set(user_id, "duesremove_step", "amount")
+
+    if amount > balance:
+        await update.message.reply_text(
+            f"⚠️ Cannot remove {config.CURRENCY}{amount:.0f}. "
+            f"Balance is {config.CURRENCY}{balance:.0f}."
+        )
+        return
+
+    reason = " ".join(args[1:]) if len(args) > 1 else None
+    if not reason:
+        state.set(user_id, "duesremove_seller_id", target_id)
+        state.set(user_id, "duesremove_amount", amount)
+        state.set(user_id, "duesremove_step", "reason")
+        await update.message.reply_text(
+            f"📉 Removing {config.CURRENCY}{amount:.0f}{who} from dues.\n\n"
+            f"📝 Please enter a reason for this removal:",
+            parse_mode="HTML",
+        )
+        return
+    remove_due(target_id, amount, reason)
     await update.message.reply_text(
-        f"📉 <b>Remove Due</b> (Balance: {config.CURRENCY}{balance:.0f})\n\nHow much do you want to remove?",
+        f"✅ <b>Due Removed</b>{who}\n\n"
+        f"💰 Amount: {config.CURRENCY}{amount:.0f}\n"
+        f"📝 Reason: {esc(reason)}",
         parse_mode="HTML",
     )
+    if is_admin:
+        await notify_seller_dues_edit(
+            update, context, target, "remove", amount, reason, get_dues_balance(target_id)
+        )

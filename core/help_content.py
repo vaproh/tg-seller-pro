@@ -493,7 +493,11 @@ Adds a due amount with a reason.
 
 <b>How to use:</b>
 Option 1: /duesadd 500 Reason here
-Option 2: /duesadd → enter amount → enter reason""",
+Option 2: /duesadd → enter amount → enter reason
+
+<b>Admin:</b>
+/duesadd @name 500 Reason here — add to a seller
+The seller is notified of your edit.""",
 
     "duesremove": """<b>📉 /duesremove — Remove Due</b>
 
@@ -502,7 +506,11 @@ Removes a due amount with a reason.
 
 <b>How to use:</b>
 Option 1: /duesremove 500 Reason here
-Option 2: /duesremove → enter amount → enter reason""",
+Option 2: /duesremove → enter amount → enter reason
+
+<b>Admin:</b>
+/duesremove @name 500 Reason here — remove from a seller
+The seller is notified of your edit.""",
 
     "export": """<b>📤 /export — Download Excel</b>
 
